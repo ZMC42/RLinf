@@ -40,13 +40,17 @@ The units. A model that reads embedding weights directly sets
 import logging
 import os
 import socket
+from copy import deepcopy
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 import torch
 import torch.distributed as dist
+from omegaconf import OmegaConf
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy
 
+from rlinf.hybrid_engines.fsdp.fsdp_model_manager import FSDPModelManager
 from rlinf.hybrid_engines.fsdp.utils import apply_fsdp2_to_model, create_device_mesh
 from rlinf.scheduler import Worker
 from rlinf.scheduler.cluster import Cluster
@@ -313,3 +317,84 @@ def test_a_model_can_keep_its_embeddings_in_the_enclosing_unit(single_rank_env):
     policy = _shard(policy)
 
     assert not isinstance(policy.block.head.table, FSDPModule)
+
+
+class _CheckpointModelManager(FSDPModelManager):
+    def model_provider_func(self) -> torch.nn.Module:
+        model = torch.nn.Sequential(torch.nn.Linear(1024, 1024, bias=False))
+        model._no_split_modules = ["Linear"]
+        return model
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA FSDP checkpoint test")
+@pytest.mark.parametrize("save_full_model_weights", [False, True])
+@pytest.mark.parametrize("strategy", ["fsdp", "fsdp2"])
+def test_checkpoint_preserves_cpu_optimizer_without_gpu_staging(
+    single_rank_env, monkeypatch, tmp_path, save_full_model_weights, strategy
+):
+    """Saving CPU optimizer state leaves GPU room for the model state dict."""
+    monkeypatch.setattr(Worker, "torch_device_type", "cuda")
+    fsdp_config = OmegaConf.load(
+        Path(__file__).resolve().parents[2]
+        / "examples/embodiment/config/hybrid_engines/fsdp.yaml"
+    )
+    fsdp_config.sharding_strategy = "no_shard"
+    fsdp_config.strategy = strategy
+    fsdp_config.use_orig_params = True
+    fsdp_config.save_full_model_weights = save_full_model_weights
+    fsdp_config.mixed_precision = {
+        "param_dtype": "fp32",
+        "reduce_dtype": "fp32",
+        "buffer_dtype": "fp32",
+    }
+    cfg = OmegaConf.create(
+        {
+            "model": {
+                "precision": "fp32",
+                "is_lora": False,
+                "model_type": "mlp_policy",
+            },
+            "fsdp_config": fsdp_config,
+            "optim": {"lr": 0.001, "adam_beta1": 0.9, "adam_beta2": 0.99},
+        }
+    )
+    manager = _CheckpointModelManager(cfg, world_size=1, rank=0)
+    manager.setup_model_and_optimizer()
+    manager.model(torch.ones(1, 1024, device="cuda")).sum().backward()
+    manager.optimizer.step()
+    manager.optimizer.zero_grad(set_to_none=True)
+    manager.lr_scheduler.step()
+    manager.offload_optimizer()
+    expected_optimizer = deepcopy(manager.optimizer.state_dict())
+    expected_scheduler = deepcopy(manager.lr_scheduler.state_dict())
+    expected_weights = manager.get_model_state_dict(
+        cpu_offload=True, full_state_dict=True
+    )
+    parameter_bytes = sum(
+        p.numel() * p.element_size() for p in manager.model.parameters()
+    )
+    manager.offload_param_and_grad()
+
+    baseline_memory = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    manager.save_checkpoint(str(tmp_path))
+    # The live weights and state-dict clone fit; two Adam moments must stay on CPU.
+    assert torch.cuda.max_memory_allocated() - baseline_memory < 3 * parameter_bytes
+    assert all(p.device.type == "cpu" for p in manager.model.parameters())
+    assert all(
+        value.device.type == "cpu"
+        for state in manager.optimizer.state.values()
+        for value in state.values()
+        if isinstance(value, torch.Tensor)
+    )
+
+    restored = _CheckpointModelManager(cfg, world_size=1, rank=0)
+    restored.setup_model_and_optimizer()
+    restored.load_checkpoint(str(tmp_path))
+    restored.offload_optimizer()
+    actual_weights = restored.get_model_state_dict(
+        cpu_offload=True, full_state_dict=True
+    )
+    torch.testing.assert_close(actual_weights, expected_weights)
+    torch.testing.assert_close(restored.optimizer.state_dict(), expected_optimizer)
+    assert restored.lr_scheduler.state_dict() == expected_scheduler

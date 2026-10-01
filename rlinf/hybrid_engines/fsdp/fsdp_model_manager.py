@@ -393,13 +393,12 @@ class FSDPModelManager:
             save_path: the directory to save checkpoint.
         """
         restore_weight_offload = self.is_weight_offloaded
-        restore_optimizer_offload = self.is_optimizer_offloaded
 
         if restore_weight_offload:
             self.load_param_and_grad(self.device)
-        if restore_optimizer_offload:
-            self.load_optimizer(self.device)
 
+        # Checkpointing accepts CPU optimizer state; keep it offloaded so the
+        # model state dict can be materialized without staging Adam moments.
         self._strategy.save_checkpoint(
             self.model,
             self.optimizer,
@@ -412,8 +411,6 @@ class FSDPModelManager:
 
         if restore_weight_offload:
             self.offload_param_and_grad()
-        if restore_optimizer_offload:
-            self.offload_optimizer()
 
     def offload_param_and_grad(self, offload_grad: bool = False) -> None:
         """

@@ -60,7 +60,11 @@ Megatron检查点文件结构如下：
 FSDP/FSDP2 检查点
 ~~~~~~~~~~~~~~~~~~
 
-FSDP/FSDP2 根据 actor worker 的实现，使用 DCP（``torch.distributed.checkpoint``）或按 rank 保存的 ``local_shard`` 检查点。默认 DCP 格式的目录结构如下：
+FSDP/FSDP2 根据 actor worker 的实现，使用 DCP（``torch.distributed.checkpoint``）或按 rank 保存的 ``local_shard`` 检查点。
+
+启用 optimizer offload 后，保存时保持 optimizer state 在 CPU 上。模型权重会为保存而加载，随后恢复原来的 offload 状态；Adam moments 无需搬回 GPU。
+
+默认 DCP 格式的目录结构如下：
 
 .. code-block:: text
 

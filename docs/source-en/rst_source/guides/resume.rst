@@ -69,8 +69,13 @@ FSDP/FSDP2 Checkpoint
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 FSDP/FSDP2 uses either DCP (``torch.distributed.checkpoint``) or a per-rank
-``local_shard`` checkpoint, depending on the actor worker. The default DCP
-layout is:
+``local_shard`` checkpoint, depending on the actor worker.
+
+When optimizer offload is enabled, saving preserves optimizer state on CPU.
+Model weights are materialized for saving and returned to their previous
+offload state afterward; Adam moments do not need to be staged on the GPU.
+
+The default DCP layout is:
 
 .. code-block:: text
 
@@ -145,4 +150,3 @@ Resuming training
 
    To verify resumption, look for the log line.  
    If the next training step starts at 30, then the resume is working well!
-
