@@ -229,6 +229,46 @@
    ``examples/embodiment/config/env/isaaclab_stack_cube.yaml`` 等环境配置中，将
    ``init_params.id`` 指向新的 task id。
 
+加载 N1.7 SFT 产物
+-----------------
+
+用 N1.7 的 ``LIBERO_PANDA`` SFT bundle 对 stack-cube 做短闭环评测。
+安装前先指定固定源码目录：
+
+.. code:: bash
+
+   export GR00T_PATH=/path/to/Isaac-GR00T
+   export ISAAC_LAB_PATH=/path/to/IsaacLab
+   bash requirements/install.sh --torch 2.8.0 --python 3.11.14 embodied --model gr00t_n1d7 --env isaaclab
+
+安装器直接复用这两个目录。集成验证使用 Isaac-GR00T ``23ace64f``、
+IsaacLab ``4246b6b4``、Python 3.11.14、Torch 2.8.0+cu128、Transformers 4.57.3、
+FlashAttention 2.8.3 和 Isaac Sim 5.1.0。完整环境锁和资源记录见项目的
+``embodied-template/docs/STACK_CUBE_N1_7_INTEGRATION.md``。
+
+指定 SFT bundle 和本地 Cosmos snapshot 后运行评测：
+
+.. code:: bash
+
+   export REPO_PATH=$PWD
+   export STACK_CUBE_SFT_BUNDLE=/path/to/stack-cube-n1.7-sft
+   export COSMOS_BACKBONE_PATH=/path/to/models/nvidia/Cosmos-Reason2-2B
+   export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
+   python evaluations/eval_embodied_agent.py \
+     --config-path ../examples/embodiment/config \
+     --config-name isaaclab_franka_stack_cube_ppo_gr00t_n1d7
+
+该配置 reset 单环境、执行两个 16 步 action chunk、收集 reward 并录制 MP4。
+固定 GR00T 版本通过路径字串选择 backbone，snapshot 路径须包含
+``nvidia/Cosmos-Reason2``。IsaacLab 场景资产仍可能访问 NVIDIA 资产服务；
+模型的禁网加载须另在隔离 namespace 中验证。
+
+converter 将 8 维 state 的旋转统一到 principal axis-angle，并保留双指符号。
+六维 arm action 保留 relative IK 命令单位，由 IsaacLab 施加 0.5 scale；
+gripper 正值为打开。processor 的有效 horizon 为 16，模型 padding 容量为 40。
+使用 ``libero_sim`` embodiment、``isaaclab_stack_cube`` converter 和 train-only
+min/max statistics。微型 checkpoint 用于工程验收，任务学习效果须单独评测。
+
 可视化与结果
 ----------------------------------------
 

@@ -2623,12 +2623,23 @@ install_gr00t_n1d7_model() {
 
     local gr00t_path
     gr00t_path=$(clone_or_reuse_repo GR00T_PATH "$VENV_DIR/gr00t" "https://github.com/NVIDIA/Isaac-GR00T.git" -b n1.7-release)
-    uv pip install -e "$gr00t_path" --no-deps
-    uv pip install -r "$SCRIPT_DIR/embodied/models/gr00t_n1d7.txt"
+    if [[ "$ENV_NAME" != isaaclab ]]; then
+        uv pip install -e "$gr00t_path" --no-deps
+        uv pip install -r "$SCRIPT_DIR/embodied/models/gr00t_n1d7.txt"
+    fi
 
     case "$ENV_NAME" in
         maniskill_libero)
             install_maniskill_libero_env
+            install_flash_attn
+            ;;
+        isaaclab)
+            install_isaaclab_env
+            # Restore the N1.7 runtime after IsaacLab installs its dependencies.
+            uv sync --extra embodied --active "${PLATFORM_UV_SYNC_ARGS[@]}" $NO_INSTALL_RLINF_CMD
+            uv pip install -r "$SCRIPT_DIR/embodied/models/gr00t_n1d7.txt"
+            # Official SFT metadata pins Python 3.10; the Isaac Sim RL runtime uses 3.11.
+            python -m pip install --no-deps --ignore-requires-python -e "$gr00t_path"
             install_flash_attn
             ;;
         *)

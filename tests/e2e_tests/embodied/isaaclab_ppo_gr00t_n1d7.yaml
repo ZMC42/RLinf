@@ -1,0 +1,6 @@
+defaults:
+- isaaclab_franka_stack_cube_ppo_gr00t_n1d7
+- _self_
+hydra:
+  searchpath:
+  - file://${oc.env:REPO_PATH}/examples/embodiment/config

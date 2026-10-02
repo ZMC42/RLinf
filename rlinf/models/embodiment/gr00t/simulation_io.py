@@ -15,6 +15,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.spatial.transform import Rotation
 
 
 def convert_libero_obs_to_gr00t_format(env_obs):
@@ -39,6 +40,33 @@ def convert_libero_obs_to_gr00t_format(env_obs):
     groot_obs["annotation.human.action.task_description"] = env_obs["task_descriptions"]
 
     return groot_obs
+
+
+def convert_isaaclab_stack_cube_obs_to_gr00t_format(env_obs: dict) -> dict:
+    """Convert signed finger state and principal axis-angle to LIBERO_PANDA IO."""
+    states = env_obs["states"].detach().cpu().float().numpy().copy()
+    if states.ndim != 2 or states.shape[1] != 8:
+        raise ValueError("IsaacLab stack-cube requires batched 8-dimensional state")
+    states[:, 3:6] = Rotation.from_rotvec(states[:, 3:6]).as_rotvec()
+    converted = dict(env_obs, states=torch.from_numpy(states))
+    for key in ("main_images", "wrist_images"):
+        image = env_obs[key]
+        if image.shape != (len(states), 256, 256, 3) or image.dtype != torch.uint8:
+            raise ValueError("IsaacLab stack-cube requires 256x256 RGB uint8 cameras")
+        converted[key] = image.detach().cpu()
+    return convert_libero_obs_to_gr00t_format(converted)
+
+
+def convert_to_isaaclab_stack_cube_action_n1d7(
+    action_chunk: dict[str, np.ndarray], chunk_size: int = 16
+) -> np.ndarray:
+    """Keep relative IK commands and binarize gripper (+open/-close)."""
+    keys = ("x", "y", "z", "roll", "pitch", "yaw", "gripper")
+    action = np.concatenate([action_chunk[k][:, :chunk_size] for k in keys], axis=-1)
+    if action.shape[1:] != (chunk_size, 7):
+        raise ValueError("IsaacLab stack-cube requires action shape [B, chunk_size, 7]")
+    action[..., -1] = np.sign(action[..., -1])
+    return action.astype(np.float32)
 
 
 def convert_maniskill_obs_to_gr00t_format(env_obs):
@@ -208,6 +236,12 @@ def convert_to_isaaclab_stack_cube_action(
     return action_array
 
 
+OBS_CONVERSION_N1D7 = {
+    "maniskill": convert_maniskill_obs_to_gr00t_format,
+    "libero": convert_libero_obs_to_gr00t_format,
+    "isaaclab_stack_cube": convert_isaaclab_stack_cube_obs_to_gr00t_format,
+}
+
 OBS_CONVERSION = {
     "maniskill": convert_maniskill_obs_to_gr00t_format,
     "libero": convert_libero_obs_to_gr00t_format,
@@ -229,7 +263,7 @@ ACTION_CONVERSION_N1D6 = {
 ACTION_CONVERSION_N1D7 = {
     "libero": convert_to_libero_action_n1d7,
     "maniskill": convert_to_maniskill_action,
-    "isaaclab_stack_cube": convert_to_isaaclab_stack_cube_action,
+    "isaaclab_stack_cube": convert_to_isaaclab_stack_cube_action_n1d7,
 }
 
 

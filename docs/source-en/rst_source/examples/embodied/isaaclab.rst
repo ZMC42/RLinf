@@ -231,6 +231,50 @@ For standalone evaluation, use the unified :doc:`Evaluation CLI
    then point ``init_params.id`` in an env config such as
    ``examples/embodiment/config/env/isaaclab_stack_cube.yaml`` at the new task id.
 
+Load an N1.7 SFT Bundle
+----------------------
+
+Use your N1.7 ``LIBERO_PANDA`` SFT bundle to run a short stack-cube evaluation.
+Set the source paths to your pinned checkouts before installing the model and
+simulator combination:
+
+.. code:: bash
+
+   export GR00T_PATH=/path/to/Isaac-GR00T
+   export ISAAC_LAB_PATH=/path/to/IsaacLab
+   bash requirements/install.sh --torch 2.8.0 --python 3.11.14 embodied --model gr00t_n1d7 --env isaaclab
+
+The installer reuses these directories. The validated integration uses
+Isaac-GR00T ``23ace64f`` and IsaacLab ``4246b6b4``, with Python 3.11.14,
+Torch 2.8.0+cu128, Transformers 4.57.3, FlashAttention 2.8.3 and Isaac Sim 5.1.0.
+The project runtime lock and resource measurements are in
+``embodied-template/docs/STACK_CUBE_N1_7_INTEGRATION.md``.
+
+Select the SFT checkpoint and its local Cosmos snapshot:
+
+.. code:: bash
+
+   export REPO_PATH=$PWD
+   export STACK_CUBE_SFT_BUNDLE=/path/to/stack-cube-n1.7-sft
+   export COSMOS_BACKBONE_PATH=/path/to/models/nvidia/Cosmos-Reason2-2B
+   export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
+   python evaluations/eval_embodied_agent.py \
+     --config-path ../examples/embodiment/config \
+     --config-name isaaclab_franka_stack_cube_ppo_gr00t_n1d7
+
+This configuration resets one environment and executes two 16-step chunks,
+collects rewards and records MP4. The snapshot path must contain
+``nvidia/Cosmos-Reason2`` because the pinned GR00T version selects its backbone
+class using that string. IsaacLab scene assets may still use NVIDIA's asset service;
+verify model loading in an isolated network namespace separately.
+
+The converter selects principal axis-angle for the 8-dimensional state and
+keeps both signed finger positions. Actions retain their relative IK units;
+IsaacLab applies scale 0.5 to the six arm commands, and positive gripper opens.
+The processor's valid horizon is 16 within the model's padded horizon of 40.
+Use ``libero_sim`` with ``isaaclab_stack_cube`` and train-only min/max statistics.
+The micro SFT checkpoint verifies the integration; evaluate task learning separately.
+
 Visualization and Results
 -------------------------
 

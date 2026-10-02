@@ -2103,3 +2103,39 @@ jobs:
         run: |
           rm -rf .venv
           uv cache prune
+
+  embodied-gr00t-n1d7-isaaclab-test:
+    if: ${{ vars.STACK_CUBE_SFT_BUNDLE != '' && vars.COSMOS_BACKBONE_PATH != '' }}
+    runs-on: embodied
+    env:
+      STACK_CUBE_SFT_BUNDLE: ${{ vars.STACK_CUBE_SFT_BUNDLE }}
+      COSMOS_BACKBONE_PATH: ${{ vars.COSMOS_BACKBONE_PATH }}
+      GR00T_PATH: ${{ vars.GR00T_N1D7_PATH }}
+      ISAAC_LAB_PATH: ${{ vars.ISAAC_LAB_PATH }}
+      OMNI_KIT_ACCEPT_EULA: "YES"
+      HF_HUB_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Create embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          bash requirements/install.sh --torch 2.8.0 --python 3.11.14 embodied --model gr00t_n1d7 --env isaaclab
+      - name: Evaluate the micro SFT policy in IsaacLab
+        timeout-minutes: 20
+        run: |
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          python evaluations/eval_embodied_agent.py \
+            --config-path ../tests/e2e_tests/embodied \
+            --config-name isaaclab_ppo_gr00t_n1d7
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf .venv
+          uv cache prune

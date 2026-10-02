@@ -32,7 +32,7 @@ from transformers.feature_extraction_utils import BatchFeature
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 from rlinf.models.embodiment.gr00t.simulation_io import (
     ACTION_CONVERSION_N1D7,
-    OBS_CONVERSION,
+    OBS_CONVERSION_N1D7,
 )
 from rlinf.models.embodiment.gr00t.utils import (
     squeeze_dict_values,
@@ -773,7 +773,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
 
         backbone_model_path = kwargs.pop("backbone_model_path", None)
         if backbone_model_path is not None:
-            backbone_model_path = str(Path(backbone_model_path).expanduser().resolve())
+            backbone_model_path = str(Path(backbone_model_path).expanduser().absolute())
             if not Path(backbone_model_path).is_dir():
                 raise FileNotFoundError(
                     f"Backbone model path does not exist: {backbone_model_path}"
@@ -781,6 +781,12 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             loading_kwargs["local_files_only"] = True
 
         original_model_name = str(config.model_name)
+        direct_local_backbone = backbone_model_path is not None and (
+            "nvidia/Cosmos-Reason2" in backbone_model_path
+            or "Qwen/Qwen3-VL" in backbone_model_path
+        )
+        if direct_local_backbone:
+            config.model_name = backbone_model_path
 
         if backbone_model_path is not None:
             logger.info(
@@ -797,7 +803,14 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         if kwargs:
             logger.warning("Ignoring unexpected kwargs: %s", sorted(kwargs))
 
-        with redirect_qwen3_backbone_to_local(original_model_name, backbone_model_path):
+        load_context = (
+            nullcontext()
+            if direct_local_backbone
+            else redirect_qwen3_backbone_to_local(
+                original_model_name, backbone_model_path
+            )
+        )
+        with load_context:
             super().__init__(config, transformers_loading_kwargs=loading_kwargs)
 
             self._modality_config, self._modality_transform = (
@@ -824,7 +837,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             self.action_head.num_inference_timesteps = denoising_steps
 
         self.obs_converter_type = obs_converter_type
-        self.obs_convert_fn = OBS_CONVERSION[obs_converter_type]
+        self.obs_convert_fn = OBS_CONVERSION_N1D7[obs_converter_type]
         self.action_convert_fn = ACTION_CONVERSION_N1D7[obs_converter_type]
         exp_cfg_path = self.model_path / "experiment_cfg"
         self._load_metadata(exp_cfg_path)
@@ -834,6 +847,38 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         )
         self.action_head.env_action_dim = self.action_dim
         self.action_head.valid_action_dim = self.valid_action_dim
+
+        if obs_converter_type == "isaaclab_stack_cube":
+            processor = self._modality_transform
+            modalities = self._modality_config[self.embodiment_tag.value]
+            keys = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
+            assert self.embodiment_tag.value == "libero_sim", (
+                "Use LIBERO_PANDA processor"
+            )
+            assert modalities["video"].modality_keys == ["image", "wrist_image"], (
+                "Camera order mismatch"
+            )
+            assert modalities["state"].modality_keys == keys, "State keys mismatch"
+            assert modalities["action"].modality_keys == keys, "Action keys mismatch"
+            assert (
+                len(modalities["action"].delta_indices) == 16
+                and config.action_horizon == processor.max_action_horizon
+                and config.action_horizon >= 16
+            ), "Action horizon mismatch"
+            assert 1 <= output_action_chunks <= 16, "Execute up to one action horizon"
+            assert self.action_dim == self.valid_action_dim == 7, (
+                "Relative IK action must have 7 dimensions"
+            )
+            state_stats = processor.state_action_processor.statistics["libero_sim"][
+                "state"
+            ]
+            assert sum(len(state_stats[k]["mean"]) for k in keys) == 8, (
+                "State dimension mismatch"
+            )
+            assert (
+                not processor.use_relative_action and not processor.use_percentiles
+            ), "SFT normalization contract mismatch"
+            assert processor.state_dropout_prob == 0, "State dropout must be disabled"
 
         self._no_split_modules = self.__class__._no_split_modules
         if hasattr(self, "config"):
@@ -896,6 +941,11 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         with open(processor_dir / "embodiment_id.json", "r") as f:
             processor_cfg["embodiment_id_mapping"] = json.load(f)
         if backbone_model_path is not None:
+            if (
+                "nvidia/Cosmos-Reason2" in backbone_model_path
+                or "Qwen/Qwen3-VL" in backbone_model_path
+            ):
+                processor_cfg["model_name"] = backbone_model_path
             processor_cfg.setdefault("transformers_loading_kwargs", {})
             processor_cfg["transformers_loading_kwargs"]["local_files_only"] = True
         modality_transform = Gr00tN1d7Processor(**processor_cfg)
@@ -1039,7 +1089,8 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         env_obs = dict(env_obs)
         # Here we have a source causing tiny inference-training inconsistency,
         # force convert the state to bf16 then back to float32 to reproduce the info loss in training.
-        env_obs["states"] = env_obs["states"].to(torch.bfloat16)
+        if self.obs_converter_type != "isaaclab_stack_cube":
+            env_obs["states"] = env_obs["states"].to(torch.bfloat16)
         env_obs["states"] = env_obs["states"].cpu().float()
 
         observations = self.obs_convert_fn(env_obs)

@@ -1358,3 +1358,51 @@ def test_cosmos3_sglang_response_keeps_every_env_in_input_order():
     assert actions.shape == (2, 16, 7)
     assert torch.all(actions[0, :, 6] == -0.5)
     assert torch.all(actions[1, :, 6] == 0.5)
+
+
+@pytest.mark.parametrize(
+    "angle", [0.0, 1e-7, np.pi - 1e-5, np.pi + 1e-5, 2 * np.pi - 0.01]
+)
+def test_isaaclab_n1d7_principal_state_and_camera_order(angle):
+    from rlinf.models.embodiment.gr00t.simulation_io import OBS_CONVERSION_N1D7
+
+    state = torch.tensor([[0.1, 0.2, 0.3, 0.0, angle, 0.0, 0.04, -0.04]])
+    observation = {
+        "states": state,
+        "main_images": torch.zeros((1, 256, 256, 3), dtype=torch.uint8),
+        "wrist_images": torch.full((1, 256, 256, 3), 255, dtype=torch.uint8),
+        "task_descriptions": ["stack cubes"],
+    }
+    converted = OBS_CONVERSION_N1D7["isaaclab_stack_cube"](observation)
+    expected_angle = angle if angle <= np.pi else angle - 2 * np.pi
+    np.testing.assert_allclose(
+        converted["state.pitch"], [[[expected_angle]]], atol=1e-6
+    )
+    np.testing.assert_array_equal(
+        converted["state.gripper"], state[:, None, 6:].numpy()
+    )
+    assert converted["video.image"].max() == 0
+    assert converted["video.wrist_image"].min() == 255
+    torch.testing.assert_close(observation["states"], state)
+
+
+def test_isaaclab_n1d7_relative_action_and_gripper_sign():
+    from rlinf.envs.action_utils import prepare_actions_for_isaaclab
+    from rlinf.models.embodiment.gr00t.simulation_io import ACTION_CONVERSION_N1D7
+
+    keys = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
+    expert = np.arange(21, dtype=np.float32).reshape(1, 3, 7) / 100
+    expert[0, :, -1] = [-0.2, 0, 0.9]
+    decoded = {k: expert[:, :, i : i + 1].copy() for i, k in enumerate(keys)}
+    action = ACTION_CONVERSION_N1D7["isaaclab_stack_cube"](decoded, chunk_size=3)
+    ready = prepare_actions_for_isaaclab(action, "gr00t_n1d7").numpy()
+    np.testing.assert_array_equal(ready[:, :, :6], expert[:, :, :6])
+    np.testing.assert_array_equal(ready[0, :, -1], [-1, 0, 1])
+    np.testing.assert_array_equal(decoded["gripper"], expert[:, :, -1:])
+
+
+def test_isaaclab_n1d7_rejects_wrong_state_dimension():
+    from rlinf.models.embodiment.gr00t.simulation_io import OBS_CONVERSION_N1D7
+
+    with pytest.raises(ValueError, match="8-dimensional"):
+        OBS_CONVERSION_N1D7["isaaclab_stack_cube"]({"states": torch.zeros(1, 7)})
