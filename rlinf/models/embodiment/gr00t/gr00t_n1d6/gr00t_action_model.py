@@ -264,9 +264,8 @@ class FlowMatchingActionHeadForRLActionPrediction(nn.Module):
         x1_pred = x_t + v_t * (1 - t_input)
 
         if mode == "eval":
-            x0_weight = 1 - (t_input + delta)
-            x1_weight = t_input + delta
-            x_t_std = torch.zeros_like(t_input)
+            # Match GR00T's Euler update, including BF16 rounding.
+            return x_t + delta * v_t, torch.zeros_like(x_t)
         else:
             if self.rl_config.get("noise_method") == "flow_sde":
                 sigmas = (
@@ -370,7 +369,10 @@ class FlowMatchingActionHeadForRLActionPrediction(nn.Module):
                     backbone_output=backbone_output,
                 )
 
-            x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
+            if mode == "eval":
+                x_t = x_t_mean
+            else:
+                x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
             log_prob = self.get_logprob_norm(x_t, x_t_mean, x_t_std)
 
             chains.append(x_t)
