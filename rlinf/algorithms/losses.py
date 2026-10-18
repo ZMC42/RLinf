@@ -192,6 +192,7 @@ def compute_ppo_actor_loss(
     clip_log_ratio_max: Optional[float] = None,
     fast_path_zero_loss_mask: Optional[bool] = False,
     log_logprob_diagnostics: bool = False,
+    log_epoch_metrics: bool = False,
     **kwargs,
 ) -> tuple[torch.Tensor, dict]:
     """
@@ -321,6 +322,9 @@ def compute_ppo_actor_loss(
         "actor/approx_kl": approx_kl.detach(),
         "actor/clip_fraction": clip_fraction.detach(),
     }
+    if log_epoch_metrics:
+        # Internal sufficient statistic; the worker removes it from legacy metrics.
+        metrics_data["_ppo_metric_count"] = loss_mask_for_metrics.sum().detach()
     if log_logprob_diagnostics:
         with torch.no_grad():
             valid = loss_mask_for_metrics

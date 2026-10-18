@@ -624,7 +624,14 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         if self.cfg.algorithm.get("recompute_logprobs", False):
             append_to_dict(metrics, self.recompute_prev_logprobs(batch_size_per_rank))
         update_epoch = self.cfg.algorithm.get("update_epoch", 1)
-        for _ in range(update_epoch):
+        log_epoch_metrics = self.cfg.algorithm.get("log_epoch_metrics", False)
+        epoch_stats = {}
+        for epoch in range(1, update_epoch + 1):
+            if log_epoch_metrics:
+                prefix = f"actor/epoch_{epoch}"
+                epoch_stats[f"{prefix}/valid_count"] = 0.0
+                for name in ("clip_fraction", "approx_kl", "ratio"):
+                    epoch_stats[f"{prefix}/{name}"] = 0.0
             rollout_dataloader_iter = split_dict_to_chunk(
                 self.rollout_batch,
                 rollout_size // batch_size_per_rank,
@@ -648,11 +655,18 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
 
                 self.optimizer.zero_grad()
                 for idx, batch in enumerate(train_micro_batch):
-                    self.train_micro_batch(
+                    epoch_data = self.train_micro_batch(
                         micro_batch=batch,
                         metrics=metrics,
                         is_last=(idx + 1) == self.gradient_accumulation,
                     )
+                    if log_epoch_metrics:
+                        count = epoch_data["valid_count"]
+                        epoch_stats[f"{prefix}/valid_count"] += count
+                        for name in ("clip_fraction", "approx_kl", "ratio"):
+                            epoch_stats[f"{prefix}/{name}"] += (
+                                epoch_data[name] * count
+                            )
                     # avoid gpu memory leak
                     train_micro_batch[idx] = None
                     del batch
@@ -684,6 +698,25 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 compute_critic_explained_variance_from_stats(reduced_stats).item()
             )
 
+        if log_epoch_metrics:
+            # Sum numerators and valid element counts across ranks before division.
+            # Averaging micro-batch/rank means would give empty masks equal weight.
+            epoch_stats = all_reduce_dict(
+                epoch_stats, dtype=torch.float64, op=torch.distributed.ReduceOp.SUM
+            )
+            if update_epoch > 1:
+                for name in ("valid_count", "clip_fraction", "approx_kl", "ratio"):
+                    epoch_stats[f"actor/epoch_ge_2/{name}"] = sum(
+                        epoch_stats[f"actor/epoch_{epoch}/{name}"]
+                        for epoch in range(2, update_epoch + 1)
+                    )
+            for key, value in epoch_stats.items():
+                if key.endswith("/valid_count"):
+                    mean_metric_dict[key] = value
+                else:
+                    count = epoch_stats[f"{key.rsplit('/', 1)[0]}/valid_count"]
+                    mean_metric_dict[key] = value / count if count else float("nan")
+
         return mean_metric_dict
 
     def train_micro_batch(
@@ -692,7 +725,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         metrics: dict[str, list[float]],
         *,
         is_last: bool,
-    ) -> None:
+    ) -> dict[str, float] | None:
         micro_batch = put_tensor_device(micro_batch, self.device)
         backward_ctx = self.before_micro_batch(self.model, is_last_micro_batch=is_last)
         advantages = micro_batch["advantages"]
@@ -774,6 +807,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             "log_logprob_diagnostics": self.cfg.algorithm.get(
                 "log_logprob_diagnostics", False
             ),
+            "log_epoch_metrics": self.cfg.algorithm.get("log_epoch_metrics", False),
         }
 
         if SupportedModel(self.cfg.actor.model.model_type) in [
@@ -792,6 +826,15 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 )
 
         loss, metrics_data = policy_loss(**loss_kwargs)
+        epoch_data = None
+        if loss_kwargs["log_epoch_metrics"]:
+            epoch_data = {
+                "valid_count": metrics_data.pop("_ppo_metric_count"),
+                **{
+                    name: metrics_data[f"actor/{name}"]
+                    for name in ("clip_fraction", "approx_kl", "ratio")
+                },
+            }
         entropy_loss = torch.tensor(0.0, device=Worker.torch_platform.current_device())
         if compute_entropy and not loss_kwargs["critic_warmup"]:
             entropy = output_dict.get("entropy", None)
@@ -836,6 +879,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
 
         metrics_data["actor/total_loss"] = loss.detach().item()
         append_to_dict(metrics, metrics_data)
+        return epoch_data
 
     def set_global_step(self, global_step: int) -> None:
         """
