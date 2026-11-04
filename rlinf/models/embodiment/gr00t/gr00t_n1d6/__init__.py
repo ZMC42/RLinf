@@ -26,6 +26,7 @@ _SUPPORTED_EMBODIMENT_TAGS = (
     "isaaclab_franka",
     "maniskill_widowx",
     "new_embodiment",
+    "oxe_droid",
     "so101",
     "so100",
 )
@@ -68,6 +69,7 @@ def get_model(cfg: DictConfig, torch_dtype=torch.bfloat16):
         "gr1": EmbodimentTag.GR1,
         "behavior_r1_pro": EmbodimentTag.BEHAVIOR_R1_PRO,
         "new_embodiment": EmbodimentTag.NEW_EMBODIMENT,
+        "oxe_droid": EmbodimentTag.OXE_DROID,
         "so101": EmbodimentTag.NEW_EMBODIMENT,
         "so100": EmbodimentTag.NEW_EMBODIMENT,
     }
